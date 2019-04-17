@@ -9,7 +9,7 @@ use exonum_testkit::{ApiKind, TestKit, TestKitApi, TestKitBuilder};
 // Import data types used in tests from the crate where the service is defined.
 use cryptocurrency_advanced::{
     api::{WalletInfo, WalletQuery},
-    transactions::{CreateWallet, Transfer},
+    transactions::{CreateWallet, Transfer, Approve},
     wallet::Wallet,
     Service,
 };
@@ -41,16 +41,22 @@ fn test_transfer() {
     api.assert_tx_status(tx_alice.hash(), &json!({ "type": "success" }));
     api.assert_tx_status(tx_bob.hash(), &json!({ "type": "success" }));
 
+    // Create approver's keys
+    let (approver_pk, approver_sk) = crypto::gen_keypair();
+
     // Check that the initial Alice's and Bob's balances persisted by the service.
     let wallet = api.get_wallet(tx_alice.author()).unwrap();
     assert_eq!(wallet.balance, 100);
+    assert_eq!(wallet.retained_amount, 0);
     let wallet = api.get_wallet(tx_bob.author()).unwrap();
     assert_eq!(wallet.balance, 100);
+    assert_eq!(wallet.retained_amount, 0);
 
     // Transfer funds by invoking the corresponding API method.
     let tx = Transfer::sign(
         &tx_alice.author(),
         &tx_bob.author(),
+        &approver_pk,
         10, // transferred amount
         0,  // seed
         &key_alice,
@@ -60,11 +66,33 @@ fn test_transfer() {
     api.assert_tx_status(tx.hash(), &json!({ "type": "success" }));
 
     // After the transfer transaction is included into a block, we may check new wallet
-    // balances.
+    // balance of sender.
     let wallet = api.get_wallet(tx_alice.author()).unwrap();
     assert_eq!(wallet.balance, 90);
+    assert_eq!(wallet.retained_amount, 10);
+    let wallet = api.get_wallet(tx_bob.author()).unwrap();
+    assert_eq!(wallet.balance, 100);
+    assert_eq!(wallet.retained_amount, 0);
+
+    // Approve the transfer
+    let tx = Approve::sign(
+        &approver_pk,
+        tx.hash(),
+        0,  // seed
+        &approver_sk,
+    );
+    api.approve(&tx);
+    testkit.create_block();
+    api.assert_tx_status(tx.hash(), &json!({ "type": "success" }));
+
+    // After the approve transaction is included into a block, we may check new wallet
+    // balance of receiver.
+    let wallet = api.get_wallet(tx_alice.author()).unwrap();
+    assert_eq!(wallet.balance, 90);
+    assert_eq!(wallet.retained_amount, 0);
     let wallet = api.get_wallet(tx_bob.author()).unwrap();
     assert_eq!(wallet.balance, 110);
+    assert_eq!(wallet.retained_amount, 0);
 }
 
 /// Check that a transfer from a non-existing wallet fails as expected.
@@ -81,10 +109,15 @@ fn test_transfer_from_nonexisting_wallet() {
     api.assert_no_wallet(tx_alice.author());
     let wallet = api.get_wallet(tx_bob.author()).unwrap();
     assert_eq!(wallet.balance, 100);
+    assert_eq!(wallet.retained_amount, 0);
+
+    // Create approver's pub key
+    let (approver_pk, _) = crypto::gen_keypair();
 
     let tx = Transfer::sign(
         &tx_alice.author(),
         &tx_bob.author(),
+        &approver_pk,
         10, // transfer amount
         0,  // seed
         &key_alice,
@@ -99,6 +132,7 @@ fn test_transfer_from_nonexisting_wallet() {
     // Check that Bob's balance doesn't change.
     let wallet = api.get_wallet(tx_bob.author()).unwrap();
     assert_eq!(wallet.balance, 100);
+    assert_eq!(wallet.retained_amount, 0);
 }
 
 /// Check that a transfer to a non-existing wallet fails as expected.
@@ -114,11 +148,16 @@ fn test_transfer_to_nonexisting_wallet() {
 
     let wallet = api.get_wallet(tx_alice.author()).unwrap();
     assert_eq!(wallet.balance, 100);
+    assert_eq!(wallet.retained_amount, 0);
     api.assert_no_wallet(tx_bob.author());
+
+    // Create approver's pub key
+    let (approver_pk, _) = crypto::gen_keypair();
 
     let tx = Transfer::sign(
         &tx_alice.author(),
         &tx_bob.author(),
+        &approver_pk,
         10, // transfer amount
         0,  // seed
         &key_alice,
@@ -133,6 +172,7 @@ fn test_transfer_to_nonexisting_wallet() {
     // Check that Alice's balance doesn't change.
     let wallet = api.get_wallet(tx_alice.author()).unwrap();
     assert_eq!(wallet.balance, 100);
+    assert_eq!(wallet.retained_amount, 0);
 }
 
 /// Check that an overcharge does not lead to changes in sender's and receiver's balances.
@@ -144,10 +184,14 @@ fn test_transfer_overcharge() {
     let (tx_bob, _) = api.create_wallet("Bob");
     testkit.create_block();
 
+    // Create approver's pub key
+    let (approver_pk, _) = crypto::gen_keypair();
+
     // Transfer funds. The transfer amount (110) is more than Alice has (100).
     let tx = Transfer::sign(
         &tx_alice.author(),
         &tx_bob.author(),
+        &approver_pk,
         110, // transfer amount
         0,   // seed
         &key_alice,
@@ -161,8 +205,138 @@ fn test_transfer_overcharge() {
 
     let wallet = api.get_wallet(tx_alice.author()).unwrap();
     assert_eq!(wallet.balance, 100);
+    assert_eq!(wallet.retained_amount, 0);
     let wallet = api.get_wallet(tx_bob.author()).unwrap();
     assert_eq!(wallet.balance, 100);
+    assert_eq!(wallet.retained_amount, 0);
+}
+
+/// Check that an approve non-existing transfer fails as expected.
+#[test]
+fn test_approve_nonexisting_transfer() {
+    let (mut testkit, api) = create_testkit();
+
+    let (tx_alice, key_alice) = api.create_wallet("Alice");
+    let (tx_bob, _) = api.create_wallet("Bob");
+    testkit.create_block();
+    api.assert_tx_status(tx_alice.hash(), &json!({ "type": "success" }));
+    api.assert_tx_status(tx_bob.hash(), &json!({ "type": "success" }));
+
+    let wallet = api.get_wallet(tx_bob.author()).unwrap();
+    assert_eq!(wallet.balance, 100);
+    assert_eq!(wallet.retained_amount, 0);
+
+    // Create approver's keys
+    let (approver_pk, approver_sk) = crypto::gen_keypair();
+
+    let tx = Transfer::sign(
+        &tx_alice.author(),
+        &tx_bob.author(),
+        &approver_pk,
+        10, // transfer amount
+        0,  // seed
+        &key_alice,
+    );
+    api.transfer(&tx);
+
+    // Do not commit transfer transaction, so it does not exist when an approve occurs.
+
+    let tx = Approve::sign(
+        &approver_pk,
+        tx.hash(),
+        0,  // seed
+        &approver_sk,
+    );
+    api.approve(&tx);
+    testkit.create_block_with_tx_hashes(&[tx.hash()]);
+    api.assert_tx_status(
+        tx.hash(),
+        &json!({ "type": "error", "code": 4, "description": "Transfer doesn't exist" }),
+    );
+
+    // Check that Bob's balance doesn't change.
+    let wallet = api.get_wallet(tx_bob.author()).unwrap();
+    assert_eq!(wallet.balance, 100);
+    assert_eq!(wallet.retained_amount, 0);
+}
+
+/// Check that an double approve transfer fails as expected.
+#[test]
+fn test_double_approve_transfer() {
+    let (mut testkit, api) = create_testkit();
+
+    let (tx_alice, key_alice) = api.create_wallet("Alice");
+    let (tx_bob, _) = api.create_wallet("Bob");
+    testkit.create_block();
+    api.assert_tx_status(tx_alice.hash(), &json!({ "type": "success" }));
+    api.assert_tx_status(tx_bob.hash(), &json!({ "type": "success" }));
+
+    let wallet = api.get_wallet(tx_alice.author()).unwrap();
+    assert_eq!(wallet.balance, 100);
+    assert_eq!(wallet.retained_amount, 0);
+    let wallet = api.get_wallet(tx_bob.author()).unwrap();
+    assert_eq!(wallet.balance, 100);
+    assert_eq!(wallet.retained_amount, 0);
+
+    // Create approver's keys
+    let (approver_pk, approver_sk) = crypto::gen_keypair();
+
+    // Transfer funds
+    let tx = Transfer::sign(
+        &tx_alice.author(),
+        &tx_bob.author(),
+        &approver_pk,
+        10, // transfer amount
+        0,  // seed
+        &key_alice,
+    );
+    api.transfer(&tx);
+    testkit.create_block();
+    api.assert_tx_status(tx.hash(), &json!({ "type": "success" }));
+
+    let transfer_tx_hash = tx.hash();
+
+    // Approve the transfer
+    let tx = Approve::sign(
+        &approver_pk,
+        transfer_tx_hash,
+        0,  // seed
+        &approver_sk,
+    );
+    api.approve(&tx);
+    testkit.create_block();
+    api.assert_tx_status(tx.hash(), &json!({ "type": "success" }));
+
+    // After the approve transaction is included into a block, we may check new wallet
+    // balance of receiver.
+    let wallet = api.get_wallet(tx_alice.author()).unwrap();
+    assert_eq!(wallet.balance, 90);
+    assert_eq!(wallet.retained_amount, 0);
+    let wallet = api.get_wallet(tx_bob.author()).unwrap();
+    assert_eq!(wallet.balance, 110);
+    assert_eq!(wallet.retained_amount, 0);
+
+    // Approve the transfer again
+    let tx = Approve::sign(
+        &approver_pk,
+        transfer_tx_hash,
+        1,  // seed
+        &approver_sk,
+    );
+    api.approve(&tx);
+    testkit.create_block();
+    api.assert_tx_status(
+        tx.hash(),
+        &json!({ "type": "error", "code": 4, "description": "Transfer doesn't exist" }),
+    );
+
+    // Check those balances doesn't change.
+    let wallet = api.get_wallet(tx_alice.author()).unwrap();
+    assert_eq!(wallet.balance, 90);
+    assert_eq!(wallet.retained_amount, 0);
+    let wallet = api.get_wallet(tx_bob.author()).unwrap();
+    assert_eq!(wallet.balance, 110);
+    assert_eq!(wallet.retained_amount, 0);
 }
 
 #[test]
@@ -218,6 +392,18 @@ impl CryptocurrencyApi {
 
     /// Sends a transfer transaction over HTTP and checks the synchronous result.
     fn transfer(&self, tx: &Signed<RawTransaction>) {
+        let data = messages::to_hex_string(&tx);
+        let tx_info: TransactionResponse = self
+            .inner
+            .public(ApiKind::Explorer)
+            .query(&json!({ "tx_body": data }))
+            .post("v1/transactions")
+            .unwrap();
+        assert_eq!(tx_info.tx_hash, tx.hash());
+    }
+
+    /// Sends a approve transaction over HTTP and checks the synchronous result.
+    fn approve(&self, tx: &Signed<RawTransaction>) {
         let data = messages::to_hex_string(&tx);
         let tx_info: TransactionResponse = self
             .inner
