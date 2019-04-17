@@ -339,6 +339,107 @@ fn test_double_approve_transfer() {
     assert_eq!(wallet.retained_amount, 0);
 }
 
+/// Check that sender or receiver does not approve self transfer.
+#[test]
+fn test_self_approving() {
+    let (mut testkit, api) = create_testkit();
+
+    let (tx_alice, key_alice) = api.create_wallet("Alice");
+    let (tx_bob, _) = api.create_wallet("Bob");
+    testkit.create_block();
+
+    // Transfer funds with approve by sender.
+    let tx = Transfer::sign(
+        &tx_alice.author(),
+        &tx_bob.author(),
+        &tx_alice.author(),
+        10, // transfer amount
+        0,   // seed
+        &key_alice,
+    );
+    api.transfer(&tx);
+    testkit.create_block();
+    api.assert_tx_status(
+        tx.hash(),
+        &json!({ "type": "error", "code": 5, "description": "Approver same as sender" }),
+    );
+
+    // Transfer funds with approve by receiver.
+    let tx = Transfer::sign(
+        &tx_alice.author(),
+        &tx_bob.author(),
+        &tx_bob.author(),
+        10, // transfer amount
+        0,   // seed
+        &key_alice,
+    );
+    api.transfer(&tx);
+    testkit.create_block();
+    api.assert_tx_status(
+        tx.hash(),
+        &json!({ "type": "error", "code": 6, "description": "Approver same as receiver" }),
+    );
+
+    let wallet = api.get_wallet(tx_alice.author()).unwrap();
+    assert_eq!(wallet.balance, 100);
+    assert_eq!(wallet.retained_amount, 0);
+    let wallet = api.get_wallet(tx_bob.author()).unwrap();
+    assert_eq!(wallet.balance, 100);
+    assert_eq!(wallet.retained_amount, 0);
+}
+
+/// Check that an approve transfer by wrong approver fails as expected.
+#[test]
+fn test_wrong_approver() {
+    let (mut testkit, api) = create_testkit();
+
+    let (tx_alice, key_alice) = api.create_wallet("Alice");
+    let (tx_bob, _) = api.create_wallet("Bob");
+    testkit.create_block();
+
+    // Create approver's pub key
+    let (approver_pk, _) = crypto::gen_keypair();
+
+    // Transfer funds.
+    let tx = Transfer::sign(
+        &tx_alice.author(),
+        &tx_bob.author(),
+        &approver_pk,
+        10, // transfer amount
+        0,   // seed
+        &key_alice,
+    );
+    api.transfer(&tx);
+    testkit.create_block();
+    api.assert_tx_status(tx.hash(), &json!({ "type": "success" }));
+
+    let transfer_tx_hash = tx.hash();
+
+    // Create wrong approver's keys
+    let (wrong_approver_pk, wrong_approver_sk) = crypto::gen_keypair();
+
+    // Approve the transfer by wrong approver.
+    let tx = Approve::sign(
+        &wrong_approver_pk,
+        transfer_tx_hash,
+        0,  // seed
+        &wrong_approver_sk,
+    );
+    api.approve(&tx);
+    testkit.create_block();
+    api.assert_tx_status(
+        tx.hash(),
+        &json!({ "type": "error", "code": 7, "description": "The approver can't approve this transfer" }),
+    );
+
+    let wallet = api.get_wallet(tx_alice.author()).unwrap();
+    assert_eq!(wallet.balance, 90);
+    assert_eq!(wallet.retained_amount, 10);
+    let wallet = api.get_wallet(tx_bob.author()).unwrap();
+    assert_eq!(wallet.balance, 100);
+    assert_eq!(wallet.retained_amount, 0);
+}
+
 #[test]
 fn test_unknown_wallet_request() {
     let (_testkit, api) = create_testkit();

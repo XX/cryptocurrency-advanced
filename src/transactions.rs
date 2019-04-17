@@ -9,9 +9,6 @@ use crate::{proto, schema::Schema, CRYPTOCURRENCY_SERVICE_ID};
 
 const ERROR_SENDER_SAME_AS_RECEIVER: u8 = 0;
 const ERROR_WRONG_SENDER: u8 = 1;
-const ERROR_APPROVER_SAME_AS_SENDER: u8 = 2;
-const ERROR_APPROVER_SAME_AS_RECEIVER: u8 = 3;
-const ERROR_WRONG_APPROVER: u8 = 4;
 
 /// Error codes emitted by wallet transactions during execution.
 #[derive(Debug, Fail)]
@@ -46,6 +43,24 @@ pub enum Error {
     /// Can be emitted by `Approve`.
     #[fail(display = "Transfer doesn't exist")]
     TransferNotFound = 4,
+
+    /// Approver same as sender.
+    ///
+    /// Can be emitted by `Transfer`.
+    #[fail(display = "Approver same as sender")]
+    ApproverSameAsSender = 5,
+
+    /// Approver same as receiver.
+    ///
+    /// Can be emitted by `Transfer`.
+    #[fail(display = "Approver same as receiver")]
+    ApproverSameAsReceiver = 6,
+
+    /// The approver can't approve this transfer.
+    ///
+    /// Can be emitted by `Approve`.
+    #[fail(display = "The approver can't approve this transfer")]
+    WrongApprover = 7,
 }
 
 impl From<Error> for ExecutionError {
@@ -173,11 +188,11 @@ impl Transaction for Transfer {
         }
 
         if approver == from {
-            return Err(ExecutionError::new(ERROR_APPROVER_SAME_AS_SENDER));
+            Err(Error::ApproverSameAsSender)?;
         }
 
         if approver == to {
-            return Err(ExecutionError::new(ERROR_APPROVER_SAME_AS_RECEIVER));
+            Err(Error::ApproverSameAsReceiver)?;
         }
 
         let sender = schema.wallet(from)
@@ -186,7 +201,7 @@ impl Transaction for Transfer {
             .ok_or(Error::ReceiverNotFound)?;
 
         if sender.balance < amount {
-            Err(Error::InsufficientCurrencyAmount)?
+            Err(Error::InsufficientCurrencyAmount)?;
         }
 
         schema.retain_amount_from_wallet_balance(sender, amount, &hash, *self);
@@ -227,7 +242,7 @@ impl Transaction for Approve {
         let amount = transfer.amount;
 
         if approver != &transfer.approver {
-            return Err(ExecutionError::new(ERROR_WRONG_APPROVER));
+            Err(Error::WrongApprover)?;
         }
 
         let sender = schema.wallet(from)
@@ -236,7 +251,7 @@ impl Transaction for Approve {
             .ok_or(Error::ReceiverNotFound)?;
 
         if sender.retained_amount < amount {
-            Err(Error::InsufficientCurrencyAmount)?
+            Err(Error::InsufficientCurrencyAmount)?;
         }
 
         schema.decrease_retained_amount(sender, amount, hash, transfer_tx_hash);
