@@ -4,10 +4,24 @@ import "helpers.proto";
 
 /// Transfer `amount` of the currency from one wallet to another.
 message Transfer {
+    // `PublicKey` of sender's wallet.
+    exonum.PublicKey from = 1;
     // `PublicKey` of receiver's wallet.
-    exonum.PublicKey to = 1;
+    exonum.PublicKey to = 2;
+    // `PublicKey` of the transaction approver.
+    exonum.PublicKey approver = 3;
     // Amount of currency to transfer.
-    uint64 amount = 2;
+    uint64 amount = 4;
+    // Auxiliary number to guarantee non-idempotence of transactions.
+    uint64 seed = 5;
+}
+
+/// Approve the transfer transaction.
+message Approve {
+    // `PublicKey` of receiver's wallet.
+    exonum.PublicKey approver = 1;
+    // `Hash` of the transfer to approve.
+    exonum.Hash transfer_tx_hash = 2;
     // Auxiliary number to guarantee non-idempotence of transactions.
     uint64 seed = 3;
 }
@@ -34,8 +48,10 @@ message Wallet {
     string name = 2;
     // Current balance of the wallet.
     uint64 balance = 3;
+    // The amount is retained until the transaction is confirmed.
+    uint64 retained_amount = 4;
     // Length of the transactions history.
-    uint64 history_len = 4;
+    uint64 history_len = 5;
     // `Hash` of the transactions history.
-    exonum.Hash history_hash = 5;
+    exonum.Hash history_hash = 6;
 }

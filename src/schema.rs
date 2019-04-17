@@ -2,7 +2,7 @@ use exonum::{
     crypto::{Hash, PublicKey},
     storage::{Fork, ProofListIndex, ProofMapIndex, Snapshot},
 };
-use crate::{wallet::Wallet, INITIAL_BALANCE};
+use crate::{wallet::Wallet, INITIAL_BALANCE, transactions::Transfer};
 
 /// Database schema for cryptocurrency.
 #[derive(Debug)]
@@ -40,9 +40,19 @@ where
         self.wallets().get(pub_key)
     }
 
+    /// Returns `ProofMapIndex` with not approved transfers.
+    pub fn transfers(&self) -> ProofMapIndex<&T, Hash, Transfer> {
+        ProofMapIndex::new("cryptocurrency.transfers", &self.view)
+    }
+
+    /// Returns transfer for the given hash.
+    pub fn transfer(&self, hash: &Hash) -> Option<Transfer> {
+        self.transfers().get(hash)
+    }
+
     /// Returns the state hash of cryptocurrency service.
     pub fn state_hash(&self) -> Vec<Hash> {
-        vec![self.wallets().merkle_root()]
+        vec![self.wallets().merkle_root(), self.transfers().merkle_root()]
     }
 }
 
@@ -58,6 +68,11 @@ impl<'a> Schema<&'a mut Fork> {
         ProofListIndex::new_in_family("cryptocurrency.wallet_history", public_key, &mut self.view)
     }
 
+    /// Returns mutable `ProofMapIndex` with not approved transfers.
+    pub fn transfers_mut(&mut self) -> ProofMapIndex<&mut Fork, Hash, Transfer> {
+        ProofMapIndex::new("cryptocurrency.transfers", &mut self.view)
+    }
+
     /// Increase balance of the wallet and append new record to its history.
     ///
     /// Panics if there is no wallet with given public key.
@@ -67,22 +82,51 @@ impl<'a> Schema<&'a mut Fork> {
             history.push(*transaction);
             let history_hash = history.merkle_root();
             let balance = wallet.balance;
-            wallet.set_balance(balance + amount, &history_hash)
+            wallet.set_balance(balance + amount, history_hash)
         };
         self.wallets_mut().put(&{wallet.pub_key}, wallet);
     }
 
-    /// Decrease balance of the wallet and append new record to its history.
+    /// Decrease retained_amount of the wallet and append new record to its history.
     ///
     /// Panics if there is no wallet with given public key.
-    pub fn decrease_wallet_balance(&mut self, wallet: Wallet, amount: u64, transaction: &Hash) {
+    pub fn decrease_retained_amount(
+        &mut self,
+        wallet: Wallet,
+        amount: u64,
+        transaction: &Hash,
+        transfer_tx: &Hash
+    ) {
+        let wallet = {
+            let mut history = self.wallet_history_mut(&wallet.pub_key);
+            history.push(*transaction);
+            let history_hash = history.merkle_root();
+            let retained_amount = wallet.retained_amount;
+            wallet.set_retained_amount(retained_amount - amount, history_hash)
+        };
+        self.wallets_mut().put(&{wallet.pub_key}, wallet);
+        self.transfers_mut().remove(transfer_tx);
+    }
+
+    /// Decrease balance of the wallet, increase retained amount and append new record to its history.
+    ///
+    /// Panics if there is no wallet with given public key.
+    pub fn retain_amount_from_wallet_balance(
+        &mut self,
+        wallet: Wallet,
+        amount: u64,
+        transaction: &Hash,
+        transfer: Transfer,
+    ) {
         let wallet = {
             let mut history = self.wallet_history_mut(&wallet.pub_key);
             history.push(*transaction);
             let history_hash = history.merkle_root();
             let balance = wallet.balance;
-            wallet.set_balance(balance - amount, &history_hash)
+            let retained_amount = wallet.retained_amount;
+            wallet.set_balance_and_retained_amount(balance - amount, retained_amount + amount, history_hash)
         };
+        self.transfers_mut().put(transaction, transfer);
         self.wallets_mut().put(&{wallet.pub_key}, wallet);
     }
 
@@ -92,7 +136,7 @@ impl<'a> Schema<&'a mut Fork> {
             let mut history = self.wallet_history_mut(key);
             history.push(*transaction);
             let history_hash = history.merkle_root();
-            Wallet::new(key, name, INITIAL_BALANCE, history.len(), &history_hash)
+            Wallet::new(*key, name, INITIAL_BALANCE, 0, history.len(), history_hash)
         };
         self.wallets_mut().put(key, wallet);
     }
